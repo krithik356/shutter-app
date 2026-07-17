@@ -21,6 +21,7 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import { scrapeSite } from './utils/scrapeSite.js';
 import { generateJSON, generateImages } from './utils/openai.js';
+import instagramRouter from './routes/instagram.js';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -74,11 +75,41 @@ const userSchema = new mongoose.Schema(
       products: [String],
       tone: String,
     },
+    // Instagram account connection — access token stored encrypted (AES-256-CBC)
+    igAccount: {
+      igBusinessId: String,
+      username: String,
+      accessToken: String,   // encrypted ciphertext — never stored plaintext
+      tokenExpiresAt: Date,
+    },
     updatedAt: Date,
   },
   { timestamps: true },
 );
 const User = mongoose.model('User', userSchema);
+
+// Posts collection — append-only, one doc per generated + published ad
+const postSchema = new mongoose.Schema(
+  {
+    userId: { type: String, required: true, index: true },
+    promptUsed: String,
+    imageUrl: String,
+    caption: String,
+    hashtags: [String],
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'posted', 'rejected'],
+      default: 'pending',
+    },
+    scheduledFor: Date,
+    postedAt: Date,
+  },
+  { timestamps: true },
+);
+// Compound index for dashboard history queries
+postSchema.index({ userId: 1, createdAt: -1 });
+postSchema.index({ status: 1 });
+const Post = mongoose.model('Post', postSchema);
 
 // ── Routes ──────────────────────────────────────────────────────
 
@@ -284,6 +315,12 @@ app.post('/api/generate-images', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── Instagram routes ────────────────────────────────────────────
+// Passes User and Post models via app.locals so the router doesn't re-import
+app.locals.User = User;
+app.locals.Post = Post;
+app.use(instagramRouter);
 
 // ── Start ───────────────────────────────────────────────────────
 app.listen(PORT, () => {

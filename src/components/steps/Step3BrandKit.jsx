@@ -1,4 +1,4 @@
-import { MOCK_BRAND_KIT } from '../../data/mockData';
+import { useWizard } from '../../context/WizardContext';
 
 function Card({ label, children }) {
   return (
@@ -12,7 +12,17 @@ function Card({ label, children }) {
 }
 
 export default function Step3BrandKit({ onNext }) {
-  const kit = MOCK_BRAND_KIT;
+  const { brandKit } = useWizard();
+
+  // Guard — shouldn't reach here without a brand kit, but just in case
+  if (!brandKit) {
+    return (
+      <div className="text-muted font-mono text-sm">
+        No brand kit data available. Please go back and analyze a URL.
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="font-mono text-xs text-safelight uppercase tracking-wider mb-3.5">
@@ -28,7 +38,7 @@ export default function Step3BrandKit({ onNext }) {
 
       <Card label="Brand colors">
         <div className="flex gap-2">
-          {kit.colors.map((c) => (
+          {brandKit.colors?.map((c) => (
             <div key={c} className="w-9 h-9 rounded-md border border-hair" style={{ background: c }} />
           ))}
         </div>
@@ -36,13 +46,14 @@ export default function Step3BrandKit({ onNext }) {
 
       <Card label="Business summary">
         <p className="text-[14px] leading-relaxed text-secondary">
-          <strong className="text-paper font-medium">{kit.businessName}</strong> — {kit.summary.split('—')[1]}
+          <strong className="text-paper font-medium">{brandKit.businessName}</strong>
+          {brandKit.summary?.includes('—') ? ` — ${brandKit.summary.split('—').slice(1).join('—').trim()}` : ` — ${brandKit.summary}`}
         </p>
       </Card>
 
       <Card label="Products detected">
         <div className="flex flex-wrap gap-2">
-          {kit.products.map((p) => (
+          {brandKit.products?.map((p) => (
             <span
               key={p}
               className="font-mono text-xs bg-ink-3 border border-hair text-secondary px-2.5 py-1.5 rounded-full"
@@ -53,6 +64,12 @@ export default function Step3BrandKit({ onNext }) {
         </div>
       </Card>
 
+      {brandKit.tone && (
+        <Card label="Tone of voice">
+          <p className="text-[14px] leading-relaxed text-secondary">{brandKit.tone}</p>
+        </Card>
+      )}
+
       <div className="flex gap-3 mt-9">
         <button
           onClick={onNext}
@@ -60,6 +77,7 @@ export default function Step3BrandKit({ onNext }) {
         >
           Looks right, continue
         </button>
+        {/* TODO: wire edit — open inline editing of the brand kit fields */}
         <button className="border border-hair text-paper font-semibold text-sm rounded-md px-6 py-3.5 hover:border-secondary transition-colors">
           Edit brand kit
         </button>

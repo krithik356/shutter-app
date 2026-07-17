@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { WizardProvider } from './context/WizardContext';
 import TopBar from './components/TopBar';
 import DbStatusBadge from './components/DbStatusBadge';
 import FilmRail from './components/FilmRail';
@@ -35,16 +36,18 @@ function App() {
   const StepComponent = STEPS[step - 1];
 
   return (
-    <div className="min-h-screen bg-ink text-paper font-body pb-20">
-      <TopBar />
-      <FilmRail current={step} onJump={goTo} maxUnlocked={maxUnlocked} />
-      <div className="max-w-4xl mx-auto px-6">
-        <div className="py-16">
-          <StepComponent onNext={next} onDone={next} />
+    <WizardProvider>
+      <div className="min-h-screen bg-ink text-paper font-body pb-20">
+        <TopBar />
+        <FilmRail current={step} onJump={goTo} maxUnlocked={maxUnlocked} />
+        <div className="max-w-4xl mx-auto px-6">
+          <div className="py-16">
+            <StepComponent onNext={next} onDone={next} />
+          </div>
         </div>
+        <DbStatusBadge />
       </div>
-      <DbStatusBadge />
-    </div>
+    </WizardProvider>
   );
 }
 

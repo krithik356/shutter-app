@@ -1,7 +1,15 @@
 import { useState } from 'react';
+import { useWizard } from '../../context/WizardContext';
 
 export default function Step1Url({ onNext }) {
-  const [url, setUrl] = useState('www.northbrewcoffee.com');
+  const [url, setUrl] = useState('');
+  const { setWebsiteUrl } = useWizard();
+
+  const handleSubmit = () => {
+    if (!url.trim()) return;
+    setWebsiteUrl(url.trim());
+    onNext();
+  };
 
   return (
     <div>
@@ -20,12 +28,14 @@ export default function Step1Url({ onNext }) {
           type="text"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
           placeholder="www.yourbusiness.com"
           className="flex-1 bg-ink-2 border border-hair rounded-md px-4 py-4 font-mono text-sm text-paper placeholder:text-muted focus:outline-none focus:border-safelight"
         />
         <button
-          onClick={onNext}
-          className="bg-safelight text-paper font-semibold text-sm rounded-md px-6 py-4 whitespace-nowrap hover:opacity-90 transition-opacity"
+          onClick={handleSubmit}
+          disabled={!url.trim()}
+          className="bg-safelight text-paper font-semibold text-sm rounded-md px-6 py-4 whitespace-nowrap hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Analyze site
         </button>
