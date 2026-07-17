@@ -12,7 +12,14 @@ npm install
 npm run dev
 ```
 
-Opens at `http://localhost:5173`.
+This starts both the Vite frontend and the Express backend together.
+The app will open at `http://localhost:5173`, and API calls are proxied to `http://localhost:5001`.
+
+If you only want to start the backend server, use:
+
+```bash
+npm run server
+```
 
 ## Project structure
 

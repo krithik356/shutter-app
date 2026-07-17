@@ -28,9 +28,13 @@ export async function scrapeSite(url) {
     res = await fetch(parsed.href, {
       headers: {
         'User-Agent':
-          'Mozilla/5.0 (compatible; ShutterBot/1.0; +https://shutter.dev)',
-        Accept: 'text/html',
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
       },
+      redirect: 'follow',
       signal: AbortSignal.timeout(8000), // 8-second timeout
     });
   } catch (err) {

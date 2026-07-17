@@ -37,13 +37,19 @@ if (!MONGODB_URI) {
   process.exit(1);
 }
 
-if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.trim() === '') {
-  console.warn('⚠️   No OPENAI_API_KEY found — using mock AI responses');
-  process.env.USE_MOCK_AI = 'true';
-} else if (process.env.USE_MOCK_AI === 'true') {
-  console.warn('⚠️   USE_MOCK_AI=true — AI endpoints will return canned mock data');
+if (!process.env.OPENAI_BASE_URL?.trim() && process.env.GEMINI_API_KEY?.trim()) {
+  process.env.OPENAI_BASE_URL = 'https://gemini.googleapis.com/v1';
+}
+
+const aiKey = process.env.OPENAI_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim();
+if (!aiKey) {
+  console.error('❌  No AI API key found. Set OPENAI_API_KEY or GEMINI_API_KEY in .env and restart the server.');
+  process.exit(1);
+}
+if (process.env.GEMINI_API_KEY?.trim()) {
+  console.log('🔑  Gemini API key detected — using Gemini via OpenAI-compatible SDK');
 } else {
-  console.log('🔑  OPENAI_API_KEY detected — using real AI calls');
+  console.log('🔑  OPENAI_API_KEY detected — using real OpenAI calls');
 }
 
 // ── MongoDB connection ──────────────────────────────────────────
@@ -196,7 +202,7 @@ Images found: ${data.images.join(', ') || '(none)'}`;
     const saved = await User.findOneAndUpdate(
       { userId },
       { brandKit, updatedAt: new Date() },
-      { upsert: true, new: true, runValidators: true },
+      { upsert: true, returnDocument: 'after', runValidators: true },
     );
 
     res.json(saved.brandKit);

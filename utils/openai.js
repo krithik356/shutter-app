@@ -2,12 +2,6 @@
  * AI client utility (OpenAI SDK — compatible with OpenAI, Google Gemini,
  * and other OpenAI-compatible providers)
  *
- * Supports a mock/fallback mode for development and demos:
- *   - If USE_MOCK_AI=true in .env, or OPENAI_API_KEY is missing/empty,
- *     all calls return realistic canned responses with an artificial delay.
- *   - When a real key is provided and USE_MOCK_AI is unset or false,
- *     real API calls are made automatically — zero code changes needed.
- *
  * Text generation model is configurable via OPENAI_MODEL env var.
  * Base URL is configurable via OPENAI_BASE_URL env var.
  */
@@ -18,60 +12,10 @@ import { join } from 'node:path';
 
 let _client = null;
 
-// ── Mock mode detection ─────────────────────────────────────────
-
-/**
- * Returns true if mock mode is active:
- *   - USE_MOCK_AI is explicitly "true", OR
- *   - OPENAI_API_KEY is missing/empty (auto-fallback)
- */
-export function isMockMode() {
-  if (process.env.USE_MOCK_AI === 'true') return true;
-  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.trim() === '') return true;
-  return false;
+export function isGeminiMode() {
+  return !!process.env.GEMINI_API_KEY?.trim() ||
+    !!process.env.OPENAI_BASE_URL?.includes('googleapis.com');
 }
-
-/** Artificial delay (800–1500 ms) so frontend loading states get exercised. */
-function mockDelay() {
-  const ms = 800 + Math.random() * 700;
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ── Mock data (mirrors src/data/mockData.js for consistency) ────
-
-const MOCK_BRAND_KIT = {
-  businessName: 'North Brew Coffee',
-  summary:
-    'North Brew Coffee — a small-batch coffee roaster and café. Sells single-origin beans, subscriptions, and brewing gear. Tone is warm, unpretentious, community-focused.',
-  colors: ['#2B4C3F', '#C97B3D', '#F4EFE6', '#1A1A1A'],
-  products: [
-    'Ethiopia Yirgacheffe — $18',
-    'Colombia Reserve — $16',
-    'Monthly subscription',
-    'Pour-over kit',
-  ],
-  tone: 'warm, unpretentious, community-focused',
-};
-
-const MOCK_CONCEPT = {
-  conceptTitle:
-    'Product highlight: Ethiopia Yirgacheffe bag, morning light, promoting the new-customer discount.',
-  imagePrompt:
-    'Overhead shot of a matte kraft coffee bag labeled "Ethiopia Yirgacheffe" on a rustic wood table, soft morning window light from the left, a few scattered coffee beans and a steaming ceramic cup nearby, warm forest-green and terracotta color palette (#2B4C3F, #C97B3D), shallow depth of field, minimal and editorial, space reserved top-right for a small "15% off first order" badge.',
-};
-
-const MOCK_CAPTION = {
-  caption:
-    "Mornings are better with something worth waking up for. Our Ethiopia Yirgacheffe just landed — bright, floral, a little bit of citrus. New here? Take 15% off your first bag, link in bio.",
-  hashtags: [
-    'specialtycoffee',
-    'ethiopiacoffee',
-    'smallbatchroaster',
-    'coffeelovers',
-    'pourover',
-    'coffeetime',
-  ],
-};
 
 // ── Real client initialisation ──────────────────────────────────
 
@@ -79,14 +23,26 @@ const MOCK_CAPTION = {
 function getClient() {
   if (_client) return _client;
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error('OPENAI_API_KEY is not set — cannot create real AI client');
+    throw new Error('No AI API key is configured. Set OPENAI_API_KEY or GEMINI_API_KEY in your .env');
   }
+
+  const isGemini = !!process.env.GEMINI_API_KEY?.trim();
+  const normalizedBaseUrl = process.env.OPENAI_BASE_URL?.trim();
+  const baseUrl = normalizedBaseUrl || (isGemini ? 'https://gemini.googleapis.com/v1' : undefined);
+
   const opts = { apiKey };
-  if (process.env.OPENAI_BASE_URL) {
-    opts.baseURL = process.env.OPENAI_BASE_URL;
+  if (baseUrl) {
+    opts.baseURL = baseUrl.replace(/\/?$/, '');
   }
+
+  console.debug('[AI] getClient', {
+    provider: isGemini ? 'Gemini' : 'OpenAI',
+    baseURL: opts.baseURL,
+    model: process.env.OPENAI_MODEL || (isGemini ? 'gemini-pro' : 'gpt-4o'),
+  });
+
   _client = new OpenAI(opts);
   return _client;
 }
@@ -95,33 +51,13 @@ function getClient() {
 
 /**
  * Generate a text completion.
- * In mock mode, returns a canned string (the caller — usually generateJSON —
- * will JSON.parse it).
  */
 export async function generateText(systemPrompt, userMessage, maxTokens = 1024) {
-  // ── Mock path ───────────────────────────────────────────────
-  if (isMockMode()) {
-    await mockDelay();
-
-    // Determine which mock to return based on the system prompt content
-    if (systemPrompt.includes('brand analyst')) {
-      return JSON.stringify(MOCK_BRAND_KIT);
-    }
-    if (systemPrompt.includes('ad strategist')) {
-      return JSON.stringify(MOCK_CONCEPT);
-    }
-    if (systemPrompt.includes('copywriter')) {
-      return JSON.stringify(MOCK_CAPTION);
-    }
-
-    // Generic fallback
-    return JSON.stringify({ mock: true, message: 'Mock AI response' });
-  }
-
-  // ── Real path ───────────────────────────────────────────────
   try {
     const client = getClient();
-    const model = process.env.OPENAI_MODEL || 'gpt-4o';
+    const isGemini = isGeminiMode();
+    const model = process.env.OPENAI_MODEL || (isGemini ? 'gemini-pro' : 'gpt-4o');
+    console.debug('[AI] generateText', { provider: isGemini ? 'Gemini' : 'OpenAI', model });
 
     const completion = await client.chat.completions.create({
       model,
@@ -185,30 +121,18 @@ const IMAGES_DIR = join(process.cwd(), 'public', 'generated');
 /**
  * Generate images using the AI provider's image generation API.
  *
- * In mock mode, returns 3 distinct placeholder images from picsum.photos.
- *
  * For OpenAI: uses DALL-E 3 (n=1 per call, parallel for multiple).
  * For Gemini: uses imagen-3.0-generate-002 via the compatibility layer.
  *
  * NOTE: Each parallel call is billed separately — 3 calls = 3× cost.
  */
 export async function generateImages(prompt, count = 3) {
-  // ── Mock path ───────────────────────────────────────────────
-  if (isMockMode()) {
-    await mockDelay();
-    const images = Array.from({ length: count }, (_, i) => {
-      const seed = `shutter-${Date.now()}-${i}`;
-      return `https://picsum.photos/seed/${seed}/1024/1024`;
-    });
-    return images;
-  }
-
-  // ── Real path ───────────────────────────────────────────────
-  const isGemini = !!process.env.OPENAI_BASE_URL?.includes('googleapis.com');
+  const isGemini = isGeminiMode();
 
   try {
     const client = getClient();
     const imageModel = isGemini ? 'imagen-3.0-generate-002' : 'dall-e-3';
+    console.debug('[AI] generateImages', { provider: isGemini ? 'Gemini' : 'OpenAI', model: imageModel });
 
     const calls = Array.from({ length: count }, () =>
       client.images.generate({
