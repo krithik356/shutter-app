@@ -1,0 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  background: #15171B;
+  color: #F4F1EA;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #33373E #15171B;
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 0.08; }
+  50% { opacity: 0.22; }
+}
+.animate-pulse-soft {
+  animation: pulse-soft 1.8s ease-in-out infinite;
+}
+
+@keyframes blink-dot {
+  50% { opacity: 0.2; }
+}
+.animate-blink {
+  animation: blink-dot 1s infinite;
+}
