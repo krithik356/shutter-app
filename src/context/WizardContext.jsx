@@ -1,3 +1,4 @@
+/* eslint-disable react/only-export-components */
 import { createContext, useContext, useState } from 'react';
 
 const WizardContext = createContext(null);

@@ -244,7 +244,7 @@ router.get('/api/instagram/callback', requireIgConfig, async (req, res) => {
       throw new Error(`Short-lived token exchange failed: ${err.error_message || shortTokenRes.status}`);
     }
 
-    const { access_token: shortToken, user_id: igUserId } = await shortTokenRes.json();
+    const { access_token: shortToken } = await shortTokenRes.json();
 
     // 3. Exchange short-lived token for long-lived token (60-day)
     const longTokenParams = new URLSearchParams({
