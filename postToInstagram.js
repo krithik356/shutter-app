@@ -47,7 +47,7 @@ function sleep(ms) {
 async function postToInstagram() {
   try {
     const imageUrl =
-      "https://i.ibb.co/RG7xQr9n/Screenshot-from-2026-07-16-23-20-19.png";
+      "https://i.ibb.co/nqyFCgb4/carbmw.avif";
 
     const caption = "My first automatic Instagram post 🚀";
 

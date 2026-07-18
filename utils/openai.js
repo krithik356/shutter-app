@@ -30,17 +30,18 @@ function getClient() {
 
   const isGemini = !!process.env.GEMINI_API_KEY?.trim();
   const normalizedBaseUrl = process.env.OPENAI_BASE_URL?.trim();
-  const baseUrl = normalizedBaseUrl || (isGemini ? 'https://gemini.googleapis.com/v1' : undefined);
+  const baseUrl = normalizedBaseUrl || (isGemini ? 'https://generativelanguage.googleapis.com/v1beta/openai/' : undefined);
 
   const opts = { apiKey };
   if (baseUrl) {
-    opts.baseURL = baseUrl.replace(/\/?$/, '');
+    // Gemini OpenAI-compat endpoint requires a trailing slash; preserve it.
+    opts.baseURL = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
   }
 
   console.debug('[AI] getClient', {
     provider: isGemini ? 'Gemini' : 'OpenAI',
     baseURL: opts.baseURL,
-    model: process.env.OPENAI_MODEL || (isGemini ? 'gemini-pro' : 'gpt-4o'),
+    model: process.env.OPENAI_MODEL || (isGemini ? 'gemini-3.5-flash' : 'gpt-4o'),
   });
 
   _client = new OpenAI(opts);
@@ -56,7 +57,7 @@ export async function generateText(systemPrompt, userMessage, maxTokens = 1024) 
   try {
     const client = getClient();
     const isGemini = isGeminiMode();
-    const model = process.env.OPENAI_MODEL || (isGemini ? 'gemini-pro' : 'gpt-4o');
+    const model = process.env.OPENAI_MODEL || (isGemini ? 'gemini-3.5-flash' : 'gpt-4o');
     console.debug('[AI] generateText', { provider: isGemini ? 'Gemini' : 'OpenAI', model });
 
     const completion = await client.chat.completions.create({
@@ -97,20 +98,66 @@ export async function generateText(systemPrompt, userMessage, maxTokens = 1024) 
 
 /**
  * Call the AI expecting JSON back, with one retry if parsing fails.
+ * Uses response_format: json_object when supported to enforce valid JSON output.
  */
 export async function generateJSON(systemPrompt, userMessage, maxTokens = 1024) {
-  const raw = await generateText(systemPrompt, userMessage, maxTokens);
-  const parsed = tryParseJSON(raw);
-  if (parsed !== null) return parsed;
+  try {
+    // First attempt — request JSON mode directly from the model
+    const client = getClient();
+    const isGemini = isGeminiMode();
+    const model = process.env.OPENAI_MODEL || (isGemini ? 'gemini-3.5-flash' : 'gpt-4o');
 
-  // Retry once — ask the model to fix the JSON
-  const retryMessage =
-    'Your previous response was not valid JSON. Please respond with ONLY the corrected JSON object, no markdown fences, no extra text.';
-  const retryRaw = await generateText(systemPrompt, retryMessage, maxTokens);
-  const retryParsed = tryParseJSON(retryRaw);
-  if (retryParsed !== null) return retryParsed;
+    const completion = await client.chat.completions.create({
+      model,
+      max_tokens: maxTokens,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+    });
 
-  throw new Error('AI failed to return valid JSON after retry');
+    const raw = completion.choices?.[0]?.message?.content;
+    if (!raw) throw new Error('AI response contained no text content');
+
+    const parsed = tryParseJSON(raw);
+    if (parsed !== null) return parsed;
+
+    // Retry — ask the model to fix its own output
+    const retryCompletion = await client.chat.completions.create({
+      model,
+      max_tokens: maxTokens,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+        { role: 'assistant', content: raw },
+        { role: 'user', content: 'Your response was not valid JSON. Reply with ONLY the JSON object, no markdown fences, no extra text.' },
+      ],
+    });
+
+    const retryRaw = retryCompletion.choices?.[0]?.message?.content;
+    const retryParsed = tryParseJSON(retryRaw ?? '');
+    if (retryParsed !== null) return retryParsed;
+
+    throw new Error('AI failed to return valid JSON after retry');
+  } catch (err) {
+    if (err.message === 'AI failed to return valid JSON after retry') throw err;
+    // json_object mode not supported — fall back to plain text with retry
+    const raw = await generateText(systemPrompt, userMessage, maxTokens);
+    const parsed = tryParseJSON(raw);
+    if (parsed !== null) return parsed;
+
+    const retryRaw = await generateText(
+      systemPrompt,
+      'Your response was not valid JSON. Reply with ONLY the JSON object, no markdown fences, no extra text.',
+      maxTokens,
+    );
+    const retryParsed = tryParseJSON(retryRaw);
+    if (retryParsed !== null) return retryParsed;
+
+    throw new Error('AI failed to return valid JSON after retry');
+  }
 }
 
 // ── Image generation ────────────────────────────────────────────
@@ -119,50 +166,101 @@ export async function generateJSON(systemPrompt, userMessage, maxTokens = 1024) 
 const IMAGES_DIR = join(process.cwd(), 'public', 'generated');
 
 /**
- * Generate images using the AI provider's image generation API.
+ * Generate images.
  *
- * For OpenAI: uses DALL-E 3 (n=1 per call, parallel for multiple).
- * For Gemini: uses imagen-3.0-generate-002 via the compatibility layer.
+ * Demo mode (default): returns placeholder images from picsum.photos — no API key needed.
+ *   Enable real generation by setting ENABLE_IMAGE_GEN=true in .env.
  *
- * NOTE: Each parallel call is billed separately — 3 calls = 3× cost.
+ * Real mode (ENABLE_IMAGE_GEN=true):
+ *   - Gemini: uses native generateContent API with responseModalities IMAGE.
+ *     Model controlled by GEMINI_IMAGE_MODEL (default: gemini-3.1-flash-lite-image).
+ *   - OpenAI: uses DALL-E 3.
  */
 export async function generateImages(prompt, count = 3) {
+  // ── Demo / placeholder mode (no API key needed) ──────────────
+  if (process.env.ENABLE_IMAGE_GEN !== 'true') {
+    console.debug('[AI] generateImages — DEMO mode (set ENABLE_IMAGE_GEN=true for real images)');
+    // Use picsum.photos with a seed derived from the prompt so results are
+    // consistent for the same prompt but vary across different ones.
+    const seed = Array.from(prompt).reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    return Array.from({ length: count }, (_, i) => {
+      const id = ((seed + i * 37) % 1000) + 1; // 1-1000
+      return `https://picsum.photos/seed/${id}/1024/1024`;
+    });
+  }
+
+  // ── Real image generation ────────────────────────────────────
   const isGemini = isGeminiMode();
 
+  if (!existsSync(IMAGES_DIR)) {
+    mkdirSync(IMAGES_DIR, { recursive: true });
+  }
+
+  if (isGemini) {
+    // Native Gemini REST API — the OpenAI-compat endpoint doesn't support image models
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    const imageModel = process.env.GEMINI_IMAGE_MODEL?.trim() || 'gemini-3.1-flash-lite-image';
+    console.debug('[AI] generateImages (Gemini native)', { model: imageModel, count });
+
+    const calls = Array.from({ length: count }, async (_, i) => {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${imageModel}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+          }),
+        }
+      );
+
+      if (!resp.ok) {
+        const errBody = await resp.json().catch(() => ({}));
+        const msg = errBody?.error?.message || resp.statusText;
+        throw new Error(`Gemini image generation failed (${resp.status}): ${msg}`);
+      }
+
+      const data = await resp.json();
+      const parts = data?.candidates?.[0]?.content?.parts ?? [];
+      const imagePart = parts.find((p) => p.inlineData?.mimeType?.startsWith('image/'));
+      if (!imagePart) {
+        throw new Error('Gemini image response contained no image data');
+      }
+
+      const ext = imagePart.inlineData.mimeType.split('/')[1] || 'png';
+      const filename = `img_${Date.now()}_${i}.${ext}`;
+      const filepath = join(IMAGES_DIR, filename);
+      writeFileSync(filepath, Buffer.from(imagePart.inlineData.data, 'base64'));
+      return `/generated/${filename}`;
+    });
+
+    return Promise.all(calls);
+  }
+
+  // ── OpenAI (DALL-E 3) path ───────────────────────────────────
   try {
     const client = getClient();
-    const imageModel = isGemini ? 'imagen-3.0-generate-002' : 'dall-e-3';
-    console.debug('[AI] generateImages', { provider: isGemini ? 'Gemini' : 'OpenAI', model: imageModel });
+    console.debug('[AI] generateImages (OpenAI DALL-E 3)', { count });
 
     const calls = Array.from({ length: count }, () =>
       client.images.generate({
-        model: imageModel,
+        model: 'dall-e-3',
         prompt,
         size: '1024x1024',
         n: 1,
-        ...(isGemini ? { response_format: 'b64_json' } : {}),
       }),
     );
 
     const results = await Promise.all(calls);
-
-    if (!existsSync(IMAGES_DIR)) {
-      mkdirSync(IMAGES_DIR, { recursive: true });
-    }
-
-    const urls = results.map((r, i) => {
+    return results.map((r) => {
       const item = r.data[0];
       if (item.url) return item.url;
-      if (item.b64_json) {
-        const filename = `img_${Date.now()}_${i}.png`;
-        const filepath = join(IMAGES_DIR, filename);
-        writeFileSync(filepath, Buffer.from(item.b64_json, 'base64'));
-        return `/generated/${filename}`;
-      }
-      throw new Error('Image response contained neither url nor b64_json');
+      throw new Error('DALL-E response contained no URL');
     });
-
-    return urls;
   } catch (err) {
     if (err.code === 'content_policy_violation' || err.message?.includes('content policy')) {
       throw new Error(`Image prompt rejected by content policy: ${err.message}`);
@@ -175,6 +273,8 @@ export async function generateImages(prompt, count = 3) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
+
+
 
 function tryParseJSON(text) {
   let cleaned = text.trim();

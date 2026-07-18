@@ -40,7 +40,7 @@ if (!MONGODB_URI) {
 }
 
 if (!process.env.OPENAI_BASE_URL?.trim() && process.env.GEMINI_API_KEY?.trim()) {
-  process.env.OPENAI_BASE_URL = 'https://gemini.googleapis.com/v1';
+  process.env.OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
 }
 
 const aiKey = process.env.OPENAI_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim();
@@ -171,6 +171,26 @@ app.post('/api/brand-kit', async (req, res) => {
     if (!userId) return res.status(400).json({ error: 'userId is required' });
     if (!websiteUrl) return res.status(400).json({ error: 'websiteUrl is required' });
 
+    // ── DEMO MODE — no AI key needed ─────────────────────────────
+    if (process.env.DEMO_MODE === 'true') {
+      console.debug('[DEMO] /api/brand-kit — returning dummy brand kit');
+      const demoBrandKit = {
+        businessName: 'Lumière Skincare',
+        summary: 'Lumière Skincare — a clean beauty brand crafting science-backed serums, moisturizers, and SPFs. Targeted at health-conscious millennials who want effective, ingredient-transparent skincare without the fluff.',
+        colors: ['#F8F4EF', '#C9A97A', '#3D3530', '#7B9E8A', '#E8D5C4'],
+        products: ['Vitamin C Brightening Serum — $48', 'Barrier Repair Moisturizer — $52', 'SPF 50 Daily Shield — $38', 'Retinol Night Elixir — $62', 'Skincare Layering Kit — $129'],
+        tone: 'clean, confident, educational, approachable',
+      };
+      // Save demo brand kit to DB so downstream steps work
+      const saved = await User.findOneAndUpdate(
+        { userId },
+        { brandKit: demoBrandKit, updatedAt: new Date() },
+        { upsert: true, returnDocument: 'after', runValidators: true },
+      );
+      return res.json(saved.brandKit);
+    }
+
+    // ── Real AI scrape + generate ─────────────────────────────────
     // 1. Scrape
     const scrapeResult = await scrapeSite(websiteUrl);
     if (!scrapeResult.ok) {
@@ -221,6 +241,28 @@ app.post('/api/generate-concept', async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
 
+    // ── DEMO MODE ─────────────────────────────────────────────────
+    if (process.env.DEMO_MODE === 'true') {
+      console.debug('[DEMO] /api/generate-concept — returning dummy concept');
+      const demoConcepts = [
+        {
+          conceptTitle: 'Educational — Skincare Layering 101',
+          imagePrompt: 'Flat lay of 5 skincare products arranged in application order on a soft linen surface, warm morning light from the left, elegant gold text overlay reading "Layer it right" in top-left corner, muted cream and terracotta color palette, editorial and minimal, shallow depth of field with soft bokeh background.',
+        },
+        {
+          conceptTitle: 'Product Highlight — Vitamin C Serum',
+          imagePrompt: 'Close-up of a glass dropper bottle of Vitamin C serum with 2-3 drops falling in golden light, fresh orange slice and green leaves as props, clean white background with warm shadows, bright and energetic color palette, macro lens aesthetic, lifestyle skincare photography.',
+        },
+        {
+          conceptTitle: 'Lifestyle — Morning Glow Routine',
+          imagePrompt: 'Woman in a white robe applying moisturizer at a sunlit bathroom vanity, soft diffused natural light through sheer curtains, Lumière products arranged neatly on marble counter, calm and aspirational mood, warm neutral tones, lifestyle photography with shallow depth of field.',
+        },
+      ];
+      const idx = Math.floor(Date.now() / 60000) % demoConcepts.length;
+      return res.json(demoConcepts[idx]);
+    }
+
+    // ── Real AI generation ────────────────────────────────────────
     // Load brand kit
     const user = await User.findOne({ userId });
     if (!user?.brandKit) {
@@ -267,6 +309,30 @@ app.post('/api/generate-caption', async (req, res) => {
     if (!userId) return res.status(400).json({ error: 'userId is required' });
     if (!conceptTitle) return res.status(400).json({ error: 'conceptTitle is required' });
 
+    // ── Demo mode — no API key needed ─────────────────────────────
+    // Set ENABLE_CAPTION_GEN=true in .env to switch to real AI generation.
+    if (process.env.ENABLE_CAPTION_GEN !== 'true') {
+      const demoCaptions = [
+        {
+          caption: `Unlock the secret to glowing skin with our latest routine. 🌿 Layering your skincare in the right order makes all the difference — we're breaking it down step by step. Your skin deserves the best, and we're here to guide you every glow-up of the way. Try it tonight and wake up radiant! ✨`,
+          hashtags: ['skincare', 'skincareRoutine', 'glowUp', 'skincareTips', 'selfCare', 'beautyCommunity'],
+        },
+        {
+          caption: `Did you know the order you apply your skincare actually matters? 💡 From cleanser to SPF, every layer works harder when applied correctly. We've put together the ultimate guide to skincare layering so you never have to guess again. Your best skin starts here. 🌸`,
+          hashtags: ['skincareTips', 'beautyEducation', 'glowingSkin', 'skincareFirst', 'radiantSkin', 'beautyRoutine'],
+        },
+        {
+          caption: `Healthy skin is a journey, not a destination — and we're with you every step. 🧴 Our expert-curated skincare lineup helps you build a routine that actually works for your skin type. Consistency is key, and the results speak for themselves. Start your glow journey today! ✨`,
+          hashtags: ['glowJourney', 'skincareGoals', 'skinFirst', 'beautyTips', 'naturalGlow', 'selfLove'],
+        },
+      ];
+      // Pick a caption based on the concept title so same input = same output
+      const idx = conceptTitle.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % demoCaptions.length;
+      console.debug('[Caption] DEMO mode — returning placeholder (set ENABLE_CAPTION_GEN=true for real captions)');
+      return res.json(demoCaptions[idx]);
+    }
+
+    // ── Real AI generation (ENABLE_CAPTION_GEN=true) ──────────────
     // Load brand kit
     const user = await User.findOne({ userId });
     if (!user?.brandKit) {
@@ -275,14 +341,20 @@ app.post('/api/generate-caption', async (req, res) => {
 
     const bk = user.brandKit;
 
-    const systemPrompt = `You are a social-media copywriter. Write a short Instagram caption (2–4 sentences) that matches the brand's tone, plus 4–6 relevant hashtags.
+    const systemPrompt = `You are a social-media copywriter. Your ONLY job is to output a single JSON object — nothing else. No explanations, no markdown, no code fences.
 
-Return ONLY a JSON object:
+Write a short Instagram caption (2–4 sentences) matching the brand tone, plus 4–6 relevant hashtags.
+
+Output format (JSON only):
 {
-  "caption": "string — the caption text, 2-4 sentences",
-  "hashtags": ["array", "of", "hashtag", "strings", "without the # symbol"]
+  "caption": "<2-4 sentence caption>",
+  "hashtags": ["hashtag1", "hashtag2", "hashtag3"]
 }
-No markdown fences, no extra text.`;
+
+Rules:
+- hashtags must NOT include the # symbol
+- caption must be plain text, no markdown
+- output must be valid JSON only — nothing before or after the JSON object`;
 
     const userMessage = `Brand Kit:
 Business: ${bk.businessName}
@@ -292,13 +364,14 @@ Products: ${bk.products?.join(', ')}
 
 Ad Concept: ${conceptTitle}`;
 
-    const caption = await generateJSON(systemPrompt, userMessage, 512);
+    const caption = await generateJSON(systemPrompt, userMessage, 1024);
     res.json(caption);
   } catch (err) {
     console.error('/api/generate-caption error:', err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // POST /api/generate-images — NO AUTH (see top-of-file TODO)
 // Generates images via DALL-E 3 for the given prompt.
@@ -324,11 +397,86 @@ app.post('/api/generate-images', async (req, res) => {
   }
 });
 
+// ── POST /api/instagram/post-direct ─────────────────────────────
+// Direct Instagram post using env-configured credentials (INSTAGRAM_USER_ID +
+// INSTAGRAM_ACCESS_TOKEN). No OAuth needed — mirrors postToInstagram.js logic.
+// Body: { imageUrl, caption }
+app.post('/api/instagram/post-direct', async (req, res) => {
+  const { imageUrl, caption } = req.body;
+  if (!imageUrl) return res.status(400).json({ error: 'imageUrl is required' });
+  if (!caption) return res.status(400).json({ error: 'caption is required' });
+
+  const igUserId = process.env.INSTAGRAM_USER_ID;
+  const accessToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+  const GRAPH_API = 'https://graph.instagram.com/v21.0';
+
+  if (!igUserId || !accessToken) {
+    return res.status(503).json({
+      error: 'INSTAGRAM_USER_ID and INSTAGRAM_ACCESS_TOKEN must be set in .env',
+    });
+  }
+
+  try {
+    console.log('[IG Direct] Creating media container...');
+
+    // Step 1: Create media container
+    const containerRes = await fetch(`${GRAPH_API}/${igUserId}/media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ image_url: imageUrl, caption, access_token: accessToken }).toString(),
+    });
+
+    const containerData = await containerRes.json();
+    if (!containerRes.ok || !containerData.id) {
+      const msg = containerData?.error?.message || 'Failed to create media container';
+      console.error('[IG Direct] Container error:', containerData);
+      return res.status(422).json({ error: msg, detail: containerData?.error });
+    }
+
+    const containerId = containerData.id;
+    console.log('[IG Direct] Container created:', containerId, '— waiting 10s...');
+
+    // Step 2: Wait for Instagram to process
+    await new Promise((resolve) => setTimeout(resolve, 10000));
+
+    // Step 3: Publish
+    const publishRes = await fetch(`${GRAPH_API}/${igUserId}/media_publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ creation_id: containerId, access_token: accessToken }).toString(),
+    });
+
+    const publishData = await publishRes.json();
+    if (!publishRes.ok || !publishData.id) {
+      const msg = publishData?.error?.message || 'Failed to publish media';
+      console.error('[IG Direct] Publish error:', publishData);
+      return res.status(422).json({ error: msg, detail: publishData?.error });
+    }
+
+    console.log(`[IG Direct] ✅ Posted successfully! Post ID: ${publishData.id}`);
+
+    // Save to DB
+    await Post.create({
+      userId: 'direct-post',
+      imageUrl,
+      caption,
+      status: 'posted',
+      postedAt: new Date(),
+    });
+
+    res.json({ success: true, igPostId: publishData.id });
+  } catch (err) {
+    console.error('/api/instagram/post-direct error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Instagram routes ────────────────────────────────────────────
 // Passes User and Post models via app.locals so the router doesn't re-import
 app.locals.User = User;
 app.locals.Post = Post;
 app.use(instagramRouter);
+
 
 // ── Token decryption helper (duplicated from routes/instagram.js for the cron job)
 function decryptToken(ciphertext) {
