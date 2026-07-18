@@ -19,6 +19,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';
+import cron from 'node-cron';
+import { createDecipheriv } from 'node:crypto';
 import { scrapeSite } from './utils/scrapeSite.js';
 import { generateJSON, generateImages } from './utils/openai.js';
 import instagramRouter from './routes/instagram.js';
@@ -321,6 +323,121 @@ app.post('/api/generate-images', async (req, res) => {
 app.locals.User = User;
 app.locals.Post = Post;
 app.use(instagramRouter);
+
+// ── Token decryption helper (duplicated from routes/instagram.js for the cron job)
+function decryptToken(ciphertext) {
+  const key = process.env.TOKEN_ENCRYPTION_KEY;
+  if (ciphertext.startsWith('unencrypted:')) {
+    return ciphertext.slice('unencrypted:'.length);
+  }
+  if (!key || key.length !== 64) {
+    throw new Error('TOKEN_ENCRYPTION_KEY is not configured');
+  }
+  const [ivHex, encHex] = ciphertext.split(':');
+  const keyBuf = Buffer.from(key, 'hex');
+  const iv = Buffer.from(ivHex, 'hex');
+  const decipher = createDecipheriv('aes-256-cbc', keyBuf, iv);
+  const decrypted = Buffer.concat([decipher.update(Buffer.from(encHex, 'hex')), decipher.final()]);
+  return decrypted.toString('utf8');
+}
+
+// ── Scheduled post cron job ─────────────────────────────────────
+// Runs every minute. Finds pending posts whose scheduledFor <= now,
+// then publishes each one via Instagram's two-step API.
+cron.schedule('* * * * *', async () => {
+  try {
+    const now = new Date();
+    const pendingPosts = await Post.find({
+      status: 'pending',
+      scheduledFor: { $lte: now },
+    }).limit(5); // process up to 5 per tick to avoid overload
+
+    if (pendingPosts.length === 0) return;
+
+    console.log(`⏰ Cron: found ${pendingPosts.length} scheduled post(s) ready to publish`);
+
+    for (const post of pendingPosts) {
+      try {
+        const user = await User.findOne({ userId: post.userId });
+        const ig = user?.igAccount;
+
+        if (!ig?.accessToken || !ig?.igBusinessId) {
+          console.error(`⏰ Cron: skipping post ${post._id} — no IG connection for user ${post.userId}`);
+          post.status = 'rejected';
+          await post.save();
+          continue;
+        }
+
+        if (ig.tokenExpiresAt && new Date(ig.tokenExpiresAt) < now) {
+          console.error(`⏰ Cron: skipping post ${post._id} — IG token expired`);
+          post.status = 'rejected';
+          await post.save();
+          continue;
+        }
+
+        const accessToken = decryptToken(ig.accessToken);
+        const igId = ig.igBusinessId;
+
+        // Step 1: Create media container
+        const containerParams = new URLSearchParams({
+          image_url: post.imageUrl,
+          caption: post.caption || '',
+          access_token: accessToken,
+        });
+
+        const containerRes = await fetch(`https://graph.instagram.com/v21.0/${igId}/media`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: containerParams.toString(),
+        });
+        const containerData = await containerRes.json();
+
+        if (!containerRes.ok || !containerData.id) {
+          console.error(`⏰ Cron: container creation failed for post ${post._id}:`, containerData.error?.message);
+          post.status = 'rejected';
+          await post.save();
+          continue;
+        }
+
+        // Brief pause before publishing
+        await new Promise((r) => setTimeout(r, 2000));
+
+        // Step 2: Publish
+        const publishParams = new URLSearchParams({
+          creation_id: containerData.id,
+          access_token: accessToken,
+        });
+
+        const publishRes = await fetch(`https://graph.instagram.com/v21.0/${igId}/media_publish`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: publishParams.toString(),
+        });
+        const publishData = await publishRes.json();
+
+        if (!publishRes.ok || !publishData.id) {
+          console.error(`⏰ Cron: publish failed for post ${post._id}:`, publishData.error?.message);
+          post.status = 'rejected';
+          await post.save();
+          continue;
+        }
+
+        post.status = 'posted';
+        post.postedAt = new Date();
+        await post.save();
+        console.log(`📸 Cron: Published scheduled post ${post._id} to @${ig.username}`);
+      } catch (err) {
+        console.error(`⏰ Cron: error publishing post ${post._id}:`, err.message);
+        post.status = 'rejected';
+        await post.save();
+      }
+    }
+  } catch (err) {
+    // Silently swallow top-level cron errors — don't crash the server
+    console.error('⏰ Cron: unexpected error:', err.message);
+  }
+});
+console.log('⏰ Scheduled-post cron job running (checks every minute)');
 
 // ── Start ───────────────────────────────────────────────────────
 app.listen(PORT, () => {

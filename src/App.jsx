@@ -23,9 +23,19 @@ const STEPS = [
   Step8Dashboard,
 ];
 
+function getInitialStep() {
+  const params = new URLSearchParams(window.location.search);
+  // After Instagram OAuth redirect, jump straight to Step 7
+  if (params.get('ig_connected') === 'true' || params.get('ig_error') === 'true') {
+    return 7;
+  }
+  return 1;
+}
+
 function App() {
-  const [step, setStep] = useState(1);
-  const [maxUnlocked, setMaxUnlocked] = useState(1);
+  const initialStep = getInitialStep();
+  const [step, setStep] = useState(initialStep);
+  const [maxUnlocked, setMaxUnlocked] = useState(initialStep);
 
   const goTo = (n) => {
     setStep(n);

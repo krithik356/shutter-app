@@ -185,6 +185,8 @@ router.get('/api/instagram/connect', requireUserId, requireIgConfig, (req, res) 
   });
 
   const authUrl = `https://api.instagram.com/oauth/authorize?${params.toString()}`;
+  console.log('[IG Connect] redirect_uri:', INSTAGRAM_REDIRECT_URI);
+  console.log('[IG Connect] Full auth URL:', authUrl);
   res.redirect(authUrl);
 });
 
@@ -220,6 +222,9 @@ router.get('/api/instagram/callback', requireIgConfig, async (req, res) => {
 
   try {
     // 2. Exchange code for short-lived token
+    console.log('[IG Callback] redirect_uri for token exchange:', INSTAGRAM_REDIRECT_URI);
+    console.log('[IG Callback] code (first 10 chars):', code?.slice(0, 10) + '...');
+
     const tokenParams = new URLSearchParams({
       client_id: INSTAGRAM_APP_ID,
       client_secret: INSTAGRAM_APP_SECRET,
@@ -450,4 +455,93 @@ router.post('/api/instagram/publish', requireUserId, async (req, res) => {
   }
 });
 
+// ── POST /api/instagram/schedule ─────────────────────────────────
+// Schedules a post for later. Body: { imageUrl, caption, postTime }
+// postTime is an ISO date string or "HH:MM" (interpreted as today's date).
+
+router.post('/api/instagram/schedule', requireUserId, async (req, res) => {
+  const { imageUrl, caption, postTime } = req.body;
+  if (!imageUrl) return res.status(400).json({ error: 'imageUrl is required' });
+  if (!caption) return res.status(400).json({ error: 'caption is required' });
+  if (!postTime) return res.status(400).json({ error: 'postTime is required' });
+
+  const { User, Post } = req.app.locals;
+
+  try {
+    // Check that user has Instagram connected
+    const user = await User.findOne({ userId: req.userId });
+    if (!user?.igAccount?.accessToken) {
+      return res.status(403).json({ error: 'Instagram not connected' });
+    }
+
+    // Parse postTime — accept ISO string or "HH:MM" / "H:MM AM/PM"
+    let scheduledFor;
+    if (postTime.includes('T') || postTime.includes('-')) {
+      scheduledFor = new Date(postTime);
+    } else {
+      // Parse "9:00 AM" or "14:30" style times as today
+      const now = new Date();
+      const timeStr = postTime.toUpperCase().trim();
+      let hours, minutes;
+
+      if (timeStr.includes('AM') || timeStr.includes('PM')) {
+        const match = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+        if (!match) return res.status(400).json({ error: `Invalid time format: "${postTime}". Use "9:00 AM" or "14:30"` });
+        hours = parseInt(match[1], 10);
+        minutes = parseInt(match[2], 10);
+        if (match[3] === 'PM' && hours !== 12) hours += 12;
+        if (match[3] === 'AM' && hours === 12) hours = 0;
+      } else {
+        const parts = timeStr.split(':');
+        hours = parseInt(parts[0], 10);
+        minutes = parseInt(parts[1], 10);
+      }
+
+      scheduledFor = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+      // If the time has already passed today, schedule for tomorrow
+      if (scheduledFor <= now) {
+        scheduledFor.setDate(scheduledFor.getDate() + 1);
+      }
+    }
+
+    if (isNaN(scheduledFor.getTime())) {
+      return res.status(400).json({ error: `Invalid time: "${postTime}"` });
+    }
+
+    const post = await Post.create({
+      userId: req.userId,
+      imageUrl,
+      caption,
+      status: 'pending',
+      scheduledFor,
+    });
+
+    console.log(`🕐 Scheduled post for ${scheduledFor.toISOString()} (user: ${req.userId})`);
+    res.json({
+      success: true,
+      postId: post._id,
+      scheduledFor: scheduledFor.toISOString(),
+    });
+  } catch (err) {
+    console.error('/api/instagram/schedule error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/posts/pending ───────────────────────────────────────
+// Returns pending scheduled posts for a user.
+
+router.get('/api/posts/pending', requireUserId, async (req, res) => {
+  const { Post } = req.app.locals;
+  try {
+    const posts = await Post.find({ userId: req.userId, status: 'pending' })
+      .sort({ scheduledFor: 1 })
+      .lean();
+    res.json({ posts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
+
