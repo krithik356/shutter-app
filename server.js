@@ -90,6 +90,11 @@ const userSchema = new mongoose.Schema(
       accessToken: String,   // encrypted ciphertext — never stored plaintext
       tokenExpiresAt: Date,
     },
+    schedule: {
+      postTime: { type: String, default: '21:00' }, // "HH:MM" format
+      timezone: { type: String, default: 'UTC' },
+      autoApprove: { type: Boolean, default: true },
+    },
     updatedAt: Date,
   },
   { timestamps: true },
@@ -499,7 +504,18 @@ app.post('/api/instagram/schedule-post', async (req, res) => {
       hashtags: [],
     });
 
-    console.log(`📅 Scheduled post ${post._id} for ${scheduledDate.toISOString()}`);
+    // Save scheduled post time as user's daily postTime preference (local time representation)
+    const hours = String(scheduledDate.getHours()).padStart(2, '0');
+    const minutes = String(scheduledDate.getMinutes()).padStart(2, '0');
+    const postTime = `${hours}:${minutes}`;
+
+    await User.findOneAndUpdate(
+      { userId },
+      { $set: { 'schedule.postTime': postTime, 'schedule.autoApprove': true } },
+      { upsert: true }
+    );
+
+    console.log(`📅 Scheduled post ${post._id} for ${scheduledDate.toISOString()} and updated user preference to ${postTime}`);
     res.json({ success: true, postId: post._id, scheduledFor: scheduledDate });
   } catch (err) {
     console.error('/api/instagram/schedule-post error:', err);
@@ -513,6 +529,149 @@ app.locals.User = User;
 app.locals.Post = Post;
 app.use(instagramRouter);
 
+
+// ── Daily Post Auto-Generation Automation Loop ──────────────────
+async function generateDailyPostForUser(user) {
+  const bk = user.brandKit;
+  if (!bk) return null;
+
+  console.log(`[Daily Auto] Generating post for user ${user.userId} (${bk.businessName})...`);
+
+  // 1. Concept / Prompt
+  const conceptSystemPrompt = `You are an expert social-media ad strategist. Given a brand kit, generate ONE ad concept for today's post.
+
+Rotate through these angles — pick ONE that would create variety:
+• Product highlight — showcase a specific product
+• Promo / offer — feature a discount, sale, or limited-time deal
+• Educational — teach something related to the product category
+• Lifestyle — show the product in an aspirational real-life context
+
+Return ONLY a JSON object:
+{
+  "conceptTitle": "string — short title describing the concept angle and subject",
+  "imagePrompt": "string — a detailed image-generation prompt describing composition, camera angle, lighting, color palette (use the brand colors), props, mood, and any text/badge overlays. Be specific and vivid, 2-4 sentences."
+}
+No markdown fences, no extra text.`;
+
+  const conceptUserMessage = `Brand Kit:
+Business: ${bk.businessName}
+Summary: ${bk.summary}
+Colors: ${bk.colors?.join(', ')}
+Products: ${bk.products?.join(', ')}
+Tone: ${bk.tone}`;
+
+  let concept;
+  if (process.env.DEMO_MODE === 'true') {
+    const angles = ['Lifestyle — Natural look', 'Product Highlight — Premium packaging', 'Educational — Beauty routine'];
+    const idx = Math.floor(Math.random() * angles.length);
+    concept = {
+      conceptTitle: angles[idx],
+      imagePrompt: `Clean skincare product photo showcasing ${bk.products?.[0] || 'moisturizer'} on a neutral background, warm lighting, cohesive with brand colors ${bk.colors?.join(', ')}.`
+    };
+  } else {
+    concept = await generateJSON(conceptSystemPrompt, conceptUserMessage, 1024);
+  }
+
+  // 2. Image
+  let imageUrls;
+  if (process.env.DEMO_MODE === 'true') {
+    const seed = Math.floor(Math.random() * 1000);
+    imageUrls = [`https://picsum.photos/seed/${seed}/1024/1024`];
+  } else {
+    imageUrls = await generateImages(concept.imagePrompt, 1);
+  }
+  const imageUrl = imageUrls[0];
+
+  // 3. Caption
+  const captionSystemPrompt = `You are a social-media copywriter. Your ONLY job is to output a single JSON object — nothing else. No explanations, no markdown, no code fences.
+
+Write a short Instagram caption (2–4 sentences) matching the brand tone, plus 4–6 relevant hashtags.
+
+Output format (JSON only):
+{
+  "caption": "<2-4 sentence caption>",
+  "hashtags": ["hashtag1", "hashtag2", "hashtag3"]
+}
+
+Rules:
+- hashtags must NOT include the # symbol
+- caption must be plain text, no markdown
+- output must be valid JSON only — nothing before or after the JSON object`;
+
+  const captionUserMessage = `Brand Kit:
+Business: ${bk.businessName}
+Summary: ${bk.summary}
+Tone: ${bk.tone}
+Products: ${bk.products?.join(', ')}
+
+Ad Concept: ${concept.conceptTitle}`;
+
+  let captionData;
+  if (process.env.DEMO_MODE === 'true') {
+    captionData = {
+      caption: `Unlock your skin's natural radiance with our customized solutions from ${bk.businessName}. Crafted for healthy, glowing skin daily. ✨`,
+      hashtags: ['skincare', 'glow', bk.businessName.toLowerCase().replace(/\s+/g, '')]
+    };
+  } else {
+    captionData = await generateJSON(captionSystemPrompt, captionUserMessage, 1024);
+  }
+
+  // Calculate scheduled date/time
+  const postTime = user.schedule?.postTime || '21:00';
+  const [hour, minute] = postTime.split(':').map(Number);
+  
+  const scheduledDate = new Date();
+  scheduledDate.setHours(hour, minute, 0, 0);
+  if (scheduledDate <= new Date()) {
+    // If the time has already passed today, schedule for tomorrow
+    scheduledDate.setDate(scheduledDate.getDate() + 1);
+  }
+
+  const tags = (captionData.hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
+  const fullCaption = captionData.caption ? `${captionData.caption}\n\n${tags}` : tags;
+
+  const post = await Post.create({
+    userId: user.userId,
+    promptUsed: concept.imagePrompt,
+    imageUrl,
+    caption: fullCaption,
+    status: 'pending',
+    scheduledFor: scheduledDate,
+  });
+
+  console.log(`[Daily Auto] Scheduled automatic post ${post._id} for ${scheduledDate.toISOString()}`);
+  return post;
+}
+
+// Check every 15 minutes to pre-generate posts
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    const users = await User.find({});
+    for (const user of users) {
+      if (!user.brandKit) continue;
+
+      const now = new Date();
+      // Check if user already has a pending scheduled post in the future
+      const existingPending = await Post.findOne({
+        userId: user.userId,
+        status: 'pending',
+        scheduledFor: { $gt: now },
+      });
+
+      if (!existingPending) {
+        console.log(`⏰ Auto-Gen: User ${user.userId} lacks a future pending post. Generating now...`);
+        try {
+          await generateDailyPostForUser(user);
+        } catch (genErr) {
+          console.error(`❌ Auto-Gen: Failed to generate post for user ${user.userId}:`, genErr.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('⏰ Auto-Gen: Unexpected error in daily generation loop:', err.message);
+  }
+});
+console.log('⏰ Auto-generation cron job running (checks every 15 minutes)');
 
 // ── Token decryption helper (duplicated from routes/instagram.js for the cron job)
 function decryptToken(ciphertext) {
@@ -550,23 +709,40 @@ cron.schedule('* * * * *', async () => {
       try {
         const user = await User.findOne({ userId: post.userId });
         const ig = user?.igAccount;
+        let accessToken;
+        let igId;
+        let username;
 
         if (!ig?.accessToken || !ig?.igBusinessId) {
-          console.error(`⏰ Cron: skipping post ${post._id} — no IG connection for user ${post.userId}`);
-          post.status = 'rejected';
-          await post.save();
-          continue;
+          if (process.env.INSTAGRAM_ACCESS_TOKEN && process.env.INSTAGRAM_USER_ID) {
+            console.log(`⏰ Cron: using developer fallback credentials for post ${post._id}`);
+            accessToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+            igId = process.env.INSTAGRAM_USER_ID;
+            username = 'developer_fallback';
+          } else {
+            console.error(`⏰ Cron: skipping post ${post._id} — no IG connection for user ${post.userId}`);
+            post.status = 'rejected';
+            await post.save();
+            continue;
+          }
+        } else {
+          if (ig.tokenExpiresAt && new Date(ig.tokenExpiresAt) < now) {
+            console.error(`⏰ Cron: skipping post ${post._id} — IG token expired`);
+            post.status = 'rejected';
+            await post.save();
+            continue;
+          }
+          try {
+            accessToken = decryptToken(ig.accessToken);
+          } catch (decErr) {
+            console.error(`⏰ Cron: failed to decrypt token for post ${post._id}:`, decErr.message);
+            post.status = 'rejected';
+            await post.save();
+            continue;
+          }
+          igId = ig.igBusinessId;
+          username = ig.username;
         }
-
-        if (ig.tokenExpiresAt && new Date(ig.tokenExpiresAt) < now) {
-          console.error(`⏰ Cron: skipping post ${post._id} — IG token expired`);
-          post.status = 'rejected';
-          await post.save();
-          continue;
-        }
-
-        const accessToken = decryptToken(ig.accessToken);
-        const igId = ig.igBusinessId;
 
         // Step 1: Create media container
         const containerParams = new URLSearchParams({
@@ -589,8 +765,9 @@ cron.schedule('* * * * *', async () => {
           continue;
         }
 
-        // Brief pause before publishing
-        await new Promise((r) => setTimeout(r, 2000));
+        // Brief pause before publishing — wait 10s for Instagram to process the image
+        console.log(`⏰ Cron: container created: ${containerData.id} for post ${post._id} — waiting 10s...`);
+        await new Promise((r) => setTimeout(r, 10000));
 
         // Step 2: Publish
         const publishParams = new URLSearchParams({
@@ -615,7 +792,7 @@ cron.schedule('* * * * *', async () => {
         post.status = 'posted';
         post.postedAt = new Date();
         await post.save();
-        console.log(`📸 Cron: Published scheduled post ${post._id} to @${ig.username}`);
+        console.log(`📸 Cron: Published scheduled post ${post._id} to @${username}`);
       } catch (err) {
         console.error(`⏰ Cron: error publishing post ${post._id}:`, err.message);
         post.status = 'rejected';

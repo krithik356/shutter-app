@@ -543,5 +543,19 @@ router.get('/api/posts/pending', requireUserId, async (req, res) => {
   }
 });
 
+// ── GET /api/posts ───────────────────────────────────────────────
+// Returns all posts (history) for a user, sorted by newest first.
+router.get('/api/posts', requireUserId, async (req, res) => {
+  const { Post } = req.app.locals;
+  try {
+    const posts = await Post.find({ userId: req.userId })
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({ posts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
 

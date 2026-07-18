@@ -1,6 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useWizard } from '../../context/WizardContext';
-import { MOCK_HISTORY } from '../../data/mockData';
 
 export default function Step8Dashboard() {
   const { userId, selectedImageUrl, caption, hashtags } = useWizard();
@@ -9,6 +8,28 @@ export default function Step8Dashboard() {
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
   const [scheduleSuccess, setScheduleSuccess] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  const fetchHistory = useCallback(async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await fetch('/api/posts', {
+        headers: { 'x-user-id': userId },
+      });
+      if (!res.ok) throw new Error('Failed to fetch history');
+      const data = await res.json();
+      setHistory(data.posts || []);
+    } catch (err) {
+      console.error('Failed to load post history:', err);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
 
   const buildCaption = () => {
     const tags = (hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
@@ -54,12 +75,15 @@ export default function Step8Dashboard() {
       setScheduleSuccess(`✅ Post scheduled for ${scheduledDateTime.toLocaleString()}`);
       setScheduleDate('');
       setScheduleTime('09:00');
+      fetchHistory(); // Refresh post history immediately
     } catch (err) {
       setScheduleError(err.message);
     } finally {
       setScheduling(false);
     }
   };
+
+  const postedCount = history.filter((p) => p.status === 'posted').length;
 
   return (
     <div>
@@ -136,23 +160,59 @@ export default function Step8Dashboard() {
 
       <div className="flex justify-between items-end mb-6">
         <h3 className="font-display font-semibold text-base">Post history</h3>
-        <span className="font-mono text-xs text-muted">12 posted this month</span>
+        <span className="font-mono text-xs text-muted">
+          {postedCount} {postedCount === 1 ? 'post' : 'posts'} published
+        </span>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-[2px] bg-hair border border-hair rounded-xl overflow-hidden">
-        {MOCK_HISTORY.map((post) => (
-          <div key={post.date} className="bg-ink-2 aspect-square p-2.5 flex flex-col justify-between">
-            <div className="flex-1 rounded bg-gradient-to-br from-zinc-700 to-zinc-900 mb-1.5" />
-            <div className="flex justify-between items-center font-mono text-[10px] text-muted">
-              <span>{post.date}</span>
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  post.status === 'pending' ? 'bg-safelight animate-blink' : 'bg-gold'
-                }`}
-              />
-            </div>
+        {loadingHistory ? (
+          <div className="bg-ink-2 aspect-square p-5 flex items-center justify-center col-span-full">
+            <span className="font-mono text-xs text-muted animate-pulse">Loading post history...</span>
           </div>
-        ))}
+        ) : history.length === 0 ? (
+          <div className="bg-ink-2 aspect-square p-5 flex items-center justify-center col-span-full">
+            <span className="font-mono text-xs text-muted">No posts found</span>
+          </div>
+        ) : (
+          history.map((post) => {
+            const dateStr = post.postedAt || post.scheduledFor || post.createdAt;
+            const formattedDate = dateStr
+              ? new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+              : 'Unknown';
+
+            const getStatusDotColor = (status) => {
+              switch (status) {
+                case 'pending': return 'bg-safelight animate-blink';
+                case 'posted': return 'bg-gold';
+                case 'rejected': return 'bg-red-500';
+                default: return 'bg-zinc-500';
+              }
+            };
+
+            return (
+              <div key={post._id} className="bg-ink-2 aspect-square p-2.5 flex flex-col justify-between">
+                {post.imageUrl ? (
+                  <img
+                    src={post.imageUrl}
+                    alt={formattedDate}
+                    className="flex-1 rounded object-cover mb-1.5 min-h-0"
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="flex-1 rounded bg-gradient-to-br from-zinc-700 to-zinc-900 mb-1.5" />
+                )}
+                <div className="flex justify-between items-center font-mono text-[10px] text-muted">
+                  <span>{formattedDate}</span>
+                  <span
+                    title={post.status}
+                    className={`w-1.5 h-1.5 rounded-full ${getStatusDotColor(post.status)}`}
+                  />
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
