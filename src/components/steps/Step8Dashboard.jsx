@@ -1,6 +1,66 @@
+import { useState } from 'react';
+import { useWizard } from '../../context/WizardContext';
 import { MOCK_HISTORY } from '../../data/mockData';
 
 export default function Step8Dashboard() {
+  const { userId, selectedImageUrl, caption, hashtags } = useWizard();
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('09:00');
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduleError, setScheduleError] = useState(null);
+  const [scheduleSuccess, setScheduleSuccess] = useState(null);
+
+  const buildCaption = () => {
+    const tags = (hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
+    return caption ? `${caption}\n\n${tags}` : tags;
+  };
+
+  const handleSchedulePost = async () => {
+    if (!scheduleDate || !scheduleTime) {
+      setScheduleError('Please select a date and time');
+      return;
+    }
+
+    const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}:00`);
+    const now = new Date();
+
+    if (scheduledDateTime <= now) {
+      setScheduleError('Scheduled time must be in the future');
+      return;
+    }
+
+    if (!selectedImageUrl) {
+      setScheduleError('No image selected');
+      return;
+    }
+
+    setScheduling(true);
+    setScheduleError(null);
+    setScheduleSuccess(null);
+
+    try {
+      const res = await fetch('/api/instagram/schedule-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          imageUrl: selectedImageUrl,
+          caption: buildCaption(),
+          scheduledFor: scheduledDateTime.toISOString(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Schedule failed');
+      setScheduleSuccess(`✅ Post scheduled for ${scheduledDateTime.toLocaleString()}`);
+      setScheduleDate('');
+      setScheduleTime('09:00');
+    } catch (err) {
+      setScheduleError(err.message);
+    } finally {
+      setScheduling(false);
+    }
+  };
+
   return (
     <div>
       <div className="font-mono text-xs text-safelight uppercase tracking-wider mb-3.5">
@@ -25,6 +85,53 @@ export default function Step8Dashboard() {
         <button className="bg-safelight text-paper font-semibold text-[13px] rounded-md px-4.5 py-2.5 whitespace-nowrap hover:opacity-90 transition-opacity">
           Review &amp; approve
         </button>
+      </div>
+
+      {/* Schedule Next Post Card */}
+      <div className="bg-ink-2 border border-hair rounded-xl overflow-hidden mb-8 p-6">
+        <div className="mb-5">
+          <h3 className="font-display font-semibold text-lg mb-1 text-paper">Schedule Next Post</h3>
+          <p className="font-mono text-xs text-muted">Automatically publish at a specific date and time</p>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block font-mono text-[11px] text-muted uppercase tracking-wider mb-2.5">Select Date & Time</label>
+            <div className="flex gap-3 mb-4">
+              <input
+                type="date"
+                value={scheduleDate}
+                onChange={(e) => setScheduleDate(e.target.value)}
+                className="flex-1 bg-ink-3 border border-hair text-paper font-mono text-[13px] px-3 py-2.5 rounded-lg focus:outline-none focus:border-safelight"
+              />
+              <input
+                type="time"
+                value={scheduleTime}
+                onChange={(e) => setScheduleTime(e.target.value)}
+                className="w-32 bg-ink-3 border border-hair text-paper font-mono text-[13px] px-3 py-2.5 rounded-lg focus:outline-none focus:border-safelight"
+              />
+            </div>
+          </div>
+
+          {scheduleSuccess && (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-4">
+              <p className="text-emerald-400 text-sm font-mono">{scheduleSuccess}</p>
+            </div>
+          )}
+          {scheduleError && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+              <p className="text-red-400 text-sm font-mono">{scheduleError}</p>
+            </div>
+          )}
+
+          <button
+            onClick={handleSchedulePost}
+            disabled={scheduling || !scheduleDate || !scheduleTime}
+            className="w-full bg-safelight text-paper font-semibold text-sm rounded-md px-6 py-3 hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {scheduling ? 'Scheduling…' : 'Schedule Post'}
+          </button>
+        </div>
       </div>
 
       <div className="flex justify-between items-end mb-6">

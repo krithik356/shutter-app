@@ -471,6 +471,42 @@ app.post('/api/instagram/post-direct', async (req, res) => {
   }
 });
 
+// ── POST /api/instagram/schedule-post ────────────────────────────
+// Schedule a post to be published at a future time via the cron job.
+// Body: { userId, imageUrl, caption, scheduledFor (ISO datetime) }
+app.post('/api/instagram/schedule-post', async (req, res) => {
+  const { userId, imageUrl, caption, scheduledFor } = req.body;
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
+  if (!imageUrl) return res.status(400).json({ error: 'imageUrl is required' });
+  if (!caption) return res.status(400).json({ error: 'caption is required' });
+  if (!scheduledFor) return res.status(400).json({ error: 'scheduledFor (ISO datetime) is required' });
+
+  try {
+    // Validate the date is in the future
+    const scheduledDate = new Date(scheduledFor);
+    const now = new Date();
+    if (scheduledDate <= now) {
+      return res.status(400).json({ error: 'Scheduled time must be in the future' });
+    }
+
+    // Create a pending post (cron job will publish it at scheduledTime)
+    const post = await Post.create({
+      userId,
+      imageUrl,
+      caption,
+      status: 'pending',
+      scheduledFor: scheduledDate,
+      hashtags: [],
+    });
+
+    console.log(`📅 Scheduled post ${post._id} for ${scheduledDate.toISOString()}`);
+    res.json({ success: true, postId: post._id, scheduledFor: scheduledDate });
+  } catch (err) {
+    console.error('/api/instagram/schedule-post error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Instagram routes ────────────────────────────────────────────
 // Passes User and Post models via app.locals so the router doesn't re-import
 app.locals.User = User;

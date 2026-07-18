@@ -11,6 +11,7 @@ export function WizardProvider({ children }) {
   const [selectedImageUrl, setSelectedImageUrl] = useState(null);
   const [caption, setCaption] = useState('');
   const [hashtags, setHashtags] = useState([]);
+  const [scheduledTime, setScheduledTime] = useState(null); // ISO string or null for immediate
 
   return (
     <WizardContext.Provider
@@ -28,6 +29,8 @@ export function WizardProvider({ children }) {
         setCaption,
         hashtags,
         setHashtags,
+        scheduledTime,
+        setScheduledTime,
       }}
     >
       {children}

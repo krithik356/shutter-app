@@ -169,9 +169,9 @@ function NewPostPanel({ wizardImageUrl, wizardCaption, wizardHashtags, onClose }
 
 // ── Main Step7Connect ──────────────────────────────────────────────
 export default function Step7Connect({ onNext }) {
-  const { userId, selectedImageUrl, caption, hashtags, concept } = useWizard();
-  const [time, setTime] = useState('9:00 AM');
-  const [autoApprove, setAutoApprove] = useState(false);
+  const { userId, selectedImageUrl, caption, hashtags, concept, scheduledTime, setScheduledTime } = useWizard();
+  const [scheduleDate, setScheduleDate] = useState(''); // YYYY-MM-DD
+  const [scheduleTime, setScheduleTime] = useState('09:00'); // HH:mm
 
   const [igStatus, setIgStatus] = useState(null);
   const [statusError, setStatusError] = useState(null);
@@ -220,14 +220,14 @@ export default function Step7Connect({ onNext }) {
   const handlePostNow = async () => {
     setPublishing(true); setPublishError(null); setPublishResult(null);
     try {
-      const res = await fetch('/api/instagram/publish', {
+      const res = await fetch('/api/instagram/post-direct', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl: selectedImageUrl, caption: buildCaption() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Publish failed');
-      setPublishResult(data);
+      setPublishResult({ success: true, ...data });
     } catch (err) {
       setPublishError(err.message);
     } finally {
@@ -235,17 +235,40 @@ export default function Step7Connect({ onNext }) {
     }
   };
 
-  const handleSchedule = async () => {
-    setScheduling(true); setPublishError(null); setPublishResult(null);
+  const handleSchedulePost = async () => {
+    if (!scheduleDate || !scheduleTime) {
+      setPublishError('Please select a date and time');
+      return;
+    }
+
+    // Combine date and time into ISO string
+    const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}:00`);
+    const now = new Date();
+
+    if (scheduledDateTime <= now) {
+      setPublishError('Scheduled time must be in the future');
+      return;
+    }
+
+    setScheduling(true);
+    setPublishError(null);
+    setPublishResult(null);
+
     try {
-      const res = await fetch('/api/instagram/schedule', {
+      const res = await fetch('/api/instagram/schedule-post', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
-        body: JSON.stringify({ imageUrl: selectedImageUrl, caption: buildCaption(), postTime: time }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          imageUrl: selectedImageUrl,
+          caption: buildCaption(),
+          scheduledFor: scheduledDateTime.toISOString(),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Schedule failed');
-      setPublishResult({ scheduled: true, ...data });
+      setPublishResult({ scheduled: true, scheduledFor: scheduledDateTime.toISOString(), ...data });
+      setScheduledTime(scheduledDateTime.toISOString());
     } catch (err) {
       setPublishError(err.message);
     } finally {
@@ -385,14 +408,25 @@ export default function Step7Connect({ onNext }) {
         <div className="bg-ink-2 border border-hair rounded-xl overflow-hidden">
           {renderConnectionCard()}
           {igStatus?.connected && (
-            <div className="flex flex-wrap items-center gap-3.5 p-5 border-t border-hair">
-              <span className="font-mono text-[13px] text-secondary">Schedule for</span>
-              <input value={time} onChange={(e) => setTime(e.target.value)} placeholder="9:00 AM"
-                className="bg-ink-3 border border-hair text-paper font-mono text-[13px] px-3 py-2 rounded-md w-28 focus:outline-none focus:border-safelight" />
-              <label className="flex items-center gap-2 font-mono text-[13px] text-secondary cursor-pointer ml-auto">
-                <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="accent-safelight w-3.5 h-3.5" />
-                require my approval each time
-              </label>
+            <div className="space-y-4 p-5 border-t border-hair">
+              <div>
+                <label className="block font-mono text-[11px] text-muted uppercase tracking-wider mb-2.5">Schedule Date & Time</label>
+                <div className="flex gap-3">
+                  <input
+                    type="date"
+                    value={scheduleDate}
+                    onChange={(e) => setScheduleDate(e.target.value)}
+                    className="flex-1 bg-ink-3 border border-hair text-paper font-mono text-[13px] px-3 py-2.5 rounded-lg focus:outline-none focus:border-safelight"
+                  />
+                  <input
+                    type="time"
+                    value={scheduleTime}
+                    onChange={(e) => setScheduleTime(e.target.value)}
+                    className="w-32 bg-ink-3 border border-hair text-paper font-mono text-[13px] px-3 py-2.5 rounded-lg focus:outline-none focus:border-safelight"
+                  />
+                </div>
+                <p className="font-mono text-[10px] text-muted mt-1.5">Leave blank to post immediately</p>
+              </div>
             </div>
           )}
         </div>
@@ -420,14 +454,14 @@ export default function Step7Connect({ onNext }) {
                 className="bg-safelight text-paper font-semibold text-sm rounded-md px-6 py-3.5 hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed">
                 {publishing ? 'Publishing…' : 'Post now'}
               </button>
-              <button onClick={handleSchedule} disabled={publishing || scheduling || !!publishResult}
+              <button onClick={handleSchedulePost} disabled={publishing || scheduling || !!publishResult || !scheduleDate || !scheduleTime}
                 className="border border-safelight text-safelight font-semibold text-sm rounded-md px-6 py-3.5 hover:bg-safelight/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                {scheduling ? 'Scheduling…' : `Schedule for ${time}`}
+                {scheduling ? 'Scheduling…' : 'Schedule post'}
               </button>
             </>
           ) : (
-            <button onClick={onNext} disabled={!igStatus?.connected}
-              className="bg-safelight text-paper font-semibold text-sm rounded-md px-6 py-3.5 hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed">
+            <button onClick={onNext}
+              className="bg-safelight text-paper font-semibold text-sm rounded-md px-6 py-3.5 hover:opacity-90 transition-opacity">
               Start daily automation
             </button>
           )}
