@@ -172,7 +172,7 @@ app.get('/api/load/:key', async (req, res) => {
 // Scrapes the given website and uses OpenAI to produce a structured brand kit.
 app.post('/api/brand-kit', async (req, res) => {
   try {
-    const { userId, websiteUrl } = req.body;
+    const { userId, websiteUrl, timezone } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
     if (!websiteUrl) return res.status(400).json({ error: 'websiteUrl is required' });
 
@@ -187,9 +187,16 @@ app.post('/api/brand-kit', async (req, res) => {
         tone: 'clean, confident, educational, approachable',
       };
       // Save demo brand kit to DB so downstream steps work
+      const updateFields = {
+        brandKit: demoBrandKit,
+        updatedAt: new Date(),
+      };
+      if (timezone) {
+        updateFields['schedule.timezone'] = timezone;
+      }
       const saved = await User.findOneAndUpdate(
         { userId },
-        { brandKit: demoBrandKit, updatedAt: new Date() },
+        { $set: updateFields },
         { upsert: true, returnDocument: 'after', runValidators: true },
       );
       return res.json(saved.brandKit);
@@ -226,9 +233,16 @@ Images found: ${data.images.join(', ') || '(none)'}`;
     const brandKit = await generateJSON(systemPrompt, userMessage, 1024);
 
     // 3. Save to MongoDB (upsert by userId)
+    const updateFields = {
+      brandKit,
+      updatedAt: new Date(),
+    };
+    if (timezone) {
+      updateFields['schedule.timezone'] = timezone;
+    }
     const saved = await User.findOneAndUpdate(
       { userId },
-      { brandKit, updatedAt: new Date() },
+      { $set: updateFields },
       { upsert: true, returnDocument: 'after', runValidators: true },
     );
 
@@ -478,9 +492,9 @@ app.post('/api/instagram/post-direct', async (req, res) => {
 
 // ── POST /api/instagram/schedule-post ────────────────────────────
 // Schedule a post to be published at a future time via the cron job.
-// Body: { userId, imageUrl, caption, scheduledFor (ISO datetime) }
+// Body: { userId, imageUrl, caption, scheduledFor (ISO datetime), timezone }
 app.post('/api/instagram/schedule-post', async (req, res) => {
-  const { userId, imageUrl, caption, scheduledFor } = req.body;
+  const { userId, imageUrl, caption, scheduledFor, timezone } = req.body;
   if (!userId) return res.status(400).json({ error: 'userId is required' });
   if (!imageUrl) return res.status(400).json({ error: 'imageUrl is required' });
   if (!caption) return res.status(400).json({ error: 'caption is required' });
@@ -505,17 +519,25 @@ app.post('/api/instagram/schedule-post', async (req, res) => {
     });
 
     // Save scheduled post time as user's daily postTime preference (local time representation)
-    const hours = String(scheduledDate.getHours()).padStart(2, '0');
-    const minutes = String(scheduledDate.getMinutes()).padStart(2, '0');
+    const tz = timezone || 'UTC';
+    const localDateParts = getCurrentDatePartsInTimezone(tz, scheduledDate);
+    const hours = String(localDateParts.hour).padStart(2, '0');
+    const minutes = String(localDateParts.minute).padStart(2, '0');
     const postTime = `${hours}:${minutes}`;
 
     await User.findOneAndUpdate(
       { userId },
-      { $set: { 'schedule.postTime': postTime, 'schedule.autoApprove': true } },
+      { 
+        $set: { 
+          'schedule.postTime': postTime, 
+          'schedule.timezone': tz, 
+          'schedule.autoApprove': true 
+        } 
+      },
       { upsert: true }
     );
 
-    console.log(`📅 Scheduled post ${post._id} for ${scheduledDate.toISOString()} and updated user preference to ${postTime}`);
+    console.log(`📅 Scheduled post ${post._id} for ${scheduledDate.toISOString()} and updated user preference to ${postTime} (${tz})`);
     res.json({ success: true, postId: post._id, scheduledFor: scheduledDate });
   } catch (err) {
     console.error('/api/instagram/schedule-post error:', err);
@@ -618,13 +640,33 @@ Ad Concept: ${concept.conceptTitle}`;
 
   // Calculate scheduled date/time
   const postTime = user.schedule?.postTime || '21:00';
+  const tz = user.schedule?.timezone || 'UTC';
   const [hour, minute] = postTime.split(':').map(Number);
   
-  const scheduledDate = new Date();
-  scheduledDate.setHours(hour, minute, 0, 0);
+  const localNow = getCurrentDatePartsInTimezone(tz, new Date());
+  
+  let scheduledDate = getUtcDateForTimezone(
+    localNow.year,
+    localNow.month,
+    localNow.day,
+    hour,
+    minute,
+    tz
+  );
+  
   if (scheduledDate <= new Date()) {
-    // If the time has already passed today, schedule for tomorrow
-    scheduledDate.setDate(scheduledDate.getDate() + 1);
+    // If the time has already passed today in the user's timezone, schedule for tomorrow
+    const tempDate = new Date(Date.UTC(localNow.year, localNow.month, localNow.day));
+    tempDate.setUTCDate(tempDate.getUTCDate() + 1);
+    
+    scheduledDate = getUtcDateForTimezone(
+      tempDate.getUTCFullYear(),
+      tempDate.getUTCMonth(),
+      tempDate.getUTCDate(),
+      hour,
+      minute,
+      tz
+    );
   }
 
   const tags = (captionData.hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
@@ -673,6 +715,60 @@ cron.schedule('*/15 * * * *', async () => {
 });
 console.log('⏰ Auto-generation cron job running (checks every 15 minutes)');
 
+// ── Timezone Helper Functions ────────────────────────────────────
+function getCurrentDatePartsInTimezone(timezone, date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    hour12: false,
+  });
+  
+  const parts = formatter.formatToParts(date);
+  const partMap = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  
+  return {
+    year: parseInt(partMap.year, 10),
+    month: parseInt(partMap.month, 10) - 1,
+    day: parseInt(partMap.day, 10),
+    hour: parseInt(partMap.hour, 10) % 24,
+    minute: parseInt(partMap.minute, 10),
+  };
+}
+
+function getUtcDateForTimezone(year, month, day, hour, minute, timezone) {
+  const dateUtc = new Date(Date.UTC(year, month, day, hour, minute, 0));
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    hour12: false,
+  });
+  
+  const parts = formatter.formatToParts(dateUtc);
+  const partMap = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  
+  const fYear = parseInt(partMap.year, 10);
+  const fMonth = parseInt(partMap.month, 10) - 1;
+  const fDay = parseInt(partMap.day, 10);
+  const fHour = parseInt(partMap.hour, 10) % 24;
+  const fMinute = parseInt(partMap.minute, 10);
+  
+  const fDateUtc = Date.UTC(fYear, fMonth, fDay, fHour, fMinute, 0);
+  const offset = fDateUtc - dateUtc.getTime();
+  
+  const targetUtcTime = Date.UTC(year, month, day, hour, minute, 0) - offset;
+  return new Date(targetUtcTime);
+}
+
 // ── Token decryption helper (duplicated from routes/instagram.js for the cron job)
 function decryptToken(ciphertext) {
   const key = process.env.TOKEN_ENCRYPTION_KEY;
@@ -706,8 +802,20 @@ cron.schedule('* * * * *', async () => {
     console.log(`⏰ Cron: found ${pendingPosts.length} scheduled post(s) ready to publish`);
 
     for (const post of pendingPosts) {
+      // 1. Acquire atomic lock immediately to prevent double-posting from concurrent server processes
+      const lockedPost = await Post.findOneAndUpdate(
+        { _id: post._id, status: 'pending' },
+        { $set: { status: 'posted' } },
+        { new: true }
+      );
+
+      if (!lockedPost) {
+        console.log(`⏰ Cron: post ${post._id} is already being processed or published. Skipping.`);
+        continue;
+      }
+
       try {
-        const user = await User.findOne({ userId: post.userId });
+        const user = await User.findOne({ userId: lockedPost.userId });
         const ig = user?.igAccount;
         let accessToken;
         let igId;
@@ -715,29 +823,29 @@ cron.schedule('* * * * *', async () => {
 
         if (!ig?.accessToken || !ig?.igBusinessId) {
           if (process.env.INSTAGRAM_ACCESS_TOKEN && process.env.INSTAGRAM_USER_ID) {
-            console.log(`⏰ Cron: using developer fallback credentials for post ${post._id}`);
+            console.log(`⏰ Cron: using developer fallback credentials for post ${lockedPost._id}`);
             accessToken = process.env.INSTAGRAM_ACCESS_TOKEN;
             igId = process.env.INSTAGRAM_USER_ID;
             username = 'developer_fallback';
           } else {
-            console.error(`⏰ Cron: skipping post ${post._id} — no IG connection for user ${post.userId}`);
-            post.status = 'rejected';
-            await post.save();
+            console.error(`⏰ Cron: skipping post ${lockedPost._id} — no IG connection for user ${lockedPost.userId}`);
+            lockedPost.status = 'rejected';
+            await lockedPost.save();
             continue;
           }
         } else {
           if (ig.tokenExpiresAt && new Date(ig.tokenExpiresAt) < now) {
-            console.error(`⏰ Cron: skipping post ${post._id} — IG token expired`);
-            post.status = 'rejected';
-            await post.save();
+            console.error(`⏰ Cron: skipping post ${lockedPost._id} — IG token expired`);
+            lockedPost.status = 'rejected';
+            await lockedPost.save();
             continue;
           }
           try {
             accessToken = decryptToken(ig.accessToken);
           } catch (decErr) {
-            console.error(`⏰ Cron: failed to decrypt token for post ${post._id}:`, decErr.message);
-            post.status = 'rejected';
-            await post.save();
+            console.error(`⏰ Cron: failed to decrypt token for post ${lockedPost._id}:`, decErr.message);
+            lockedPost.status = 'rejected';
+            await lockedPost.save();
             continue;
           }
           igId = ig.igBusinessId;
@@ -746,8 +854,8 @@ cron.schedule('* * * * *', async () => {
 
         // Step 1: Create media container
         const containerParams = new URLSearchParams({
-          image_url: post.imageUrl,
-          caption: post.caption || '',
+          image_url: lockedPost.imageUrl,
+          caption: lockedPost.caption || '',
           access_token: accessToken,
         });
 
@@ -759,14 +867,14 @@ cron.schedule('* * * * *', async () => {
         const containerData = await containerRes.json();
 
         if (!containerRes.ok || !containerData.id) {
-          console.error(`⏰ Cron: container creation failed for post ${post._id}:`, containerData.error?.message);
-          post.status = 'rejected';
-          await post.save();
+          console.error(`⏰ Cron: container creation failed for post ${lockedPost._id}:`, containerData.error?.message);
+          lockedPost.status = 'rejected';
+          await lockedPost.save();
           continue;
         }
 
         // Brief pause before publishing — wait 10s for Instagram to process the image
-        console.log(`⏰ Cron: container created: ${containerData.id} for post ${post._id} — waiting 10s...`);
+        console.log(`⏰ Cron: container created: ${containerData.id} for post ${lockedPost._id} — waiting 10s...`);
         await new Promise((r) => setTimeout(r, 10000));
 
         // Step 2: Publish
@@ -783,20 +891,22 @@ cron.schedule('* * * * *', async () => {
         const publishData = await publishRes.json();
 
         if (!publishRes.ok || !publishData.id) {
-          console.error(`⏰ Cron: publish failed for post ${post._id}:`, publishData.error?.message);
-          post.status = 'rejected';
-          await post.save();
+          console.error(`⏰ Cron: publish failed for post ${lockedPost._id}:`, publishData.error?.message);
+          lockedPost.status = 'rejected';
+          await lockedPost.save();
           continue;
         }
 
-        post.status = 'posted';
-        post.postedAt = new Date();
-        await post.save();
-        console.log(`📸 Cron: Published scheduled post ${post._id} to @${username}`);
+        lockedPost.postedAt = new Date();
+        await lockedPost.save();
+        console.log(`📸 Cron: Published scheduled post ${lockedPost._id} to @${username}`);
       } catch (err) {
         console.error(`⏰ Cron: error publishing post ${post._id}:`, err.message);
-        post.status = 'rejected';
-        await post.save();
+        try {
+          await Post.updateOne({ _id: post._id, status: 'posted' }, { $set: { status: 'rejected' } });
+        } catch (dbErr) {
+          console.error('⏰ Cron: failed to reset status to rejected:', dbErr.message);
+        }
       }
     }
   } catch (err) {

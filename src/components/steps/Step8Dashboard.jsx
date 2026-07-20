@@ -3,8 +3,21 @@ import { useWizard } from '../../context/WizardContext';
 
 export default function Step8Dashboard() {
   const { userId, selectedImageUrl, caption, hashtags } = useWizard();
-  const [scheduleDate, setScheduleDate] = useState('');
-  const [scheduleTime, setScheduleTime] = useState('09:00');
+  const getDefaultDateTime = () => {
+    const d = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return {
+      date: `${yyyy}-${mm}-${dd}`,
+      time: `${hh}:${min}`,
+    };
+  };
+
+  const [scheduleDate, setScheduleDate] = useState(() => getDefaultDateTime().date);
+  const [scheduleTime, setScheduleTime] = useState(() => getDefaultDateTime().time);
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
   const [scheduleSuccess, setScheduleSuccess] = useState(null);
@@ -68,13 +81,23 @@ export default function Step8Dashboard() {
           imageUrl: selectedImageUrl,
           caption: buildCaption(),
           scheduledFor: scheduledDateTime.toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Schedule failed');
-      setScheduleSuccess(`✅ Post scheduled for ${scheduledDateTime.toLocaleString()}`);
-      setScheduleDate('');
-      setScheduleTime('09:00');
+      
+      const isToday = scheduledDateTime.toDateString() === now.toDateString();
+      const tomorrow = new Date(now);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const isTomorrow = scheduledDateTime.toDateString() === tomorrow.toDateString();
+      const dateStr = isToday ? 'Today' : isTomorrow ? 'Tomorrow' : scheduledDateTime.toLocaleDateString();
+      const timeStr = scheduledDateTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      
+      setScheduleSuccess(`✅ Post scheduled for ${dateStr} at ${timeStr}`);
+      const defaults = getDefaultDateTime();
+      setScheduleDate(defaults.date);
+      setScheduleTime(defaults.time);
       fetchHistory(); // Refresh post history immediately
     } catch (err) {
       setScheduleError(err.message);

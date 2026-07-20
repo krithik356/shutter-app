@@ -263,6 +263,7 @@ export default function Step7Connect({ onNext }) {
           imageUrl: selectedImageUrl,
           caption: buildCaption(),
           scheduledFor: scheduledDateTime.toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       });
       const data = await res.json();
@@ -436,11 +437,21 @@ export default function Step7Connect({ onNext }) {
             <p className="text-emerald-400 text-sm font-mono">✅ Published to @{publishResult.username}!</p>
           </div>
         )}
-        {publishResult?.scheduled && (
-          <div className="mt-5 bg-blue-500/10 border border-blue-500/30 rounded-xl p-5">
-            <p className="text-blue-400 text-sm font-mono">🕐 Scheduled for {new Date(publishResult.scheduledFor).toLocaleString()}</p>
-          </div>
-        )}
+        {publishResult?.scheduled && (() => {
+          const sDate = new Date(publishResult.scheduledFor);
+          const now = new Date();
+          const isToday = sDate.toDateString() === now.toDateString();
+          const tomorrow = new Date(now);
+          tomorrow.setDate(tomorrow.getDate() + 1);
+          const isTomorrow = sDate.toDateString() === tomorrow.toDateString();
+          const dateStr = isToday ? 'Today' : isTomorrow ? 'Tomorrow' : sDate.toLocaleDateString();
+          const timeStr = sDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+          return (
+            <div className="mt-5 bg-blue-500/10 border border-blue-500/30 rounded-xl p-5">
+              <p className="text-blue-400 text-sm font-mono">🕐 Scheduled for {dateStr} at {timeStr}</p>
+            </div>
+          );
+        })()}
         {publishError && (
           <div className="mt-5 bg-red-500/10 border border-red-500/30 rounded-xl p-5">
             <p className="text-red-400 text-sm font-mono">{publishError}</p>

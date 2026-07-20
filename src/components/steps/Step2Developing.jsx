@@ -18,7 +18,11 @@ export default function Step2Developing({ onDone }) {
       const res = await fetch('/api/brand-kit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, websiteUrl }),
+        body: JSON.stringify({ 
+          userId, 
+          websiteUrl,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
